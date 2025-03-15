@@ -1,0 +1,16 @@
+[project]
+name = "text2api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dlt[duckdb]>=1.8.1",
+    "openapi-pydantic>=0.5.1",
+    "pytest>=8.3.5",
+    "pyyaml>=6.0.2",
+    "requests>=2.32.3",
+    "responses>=0.25.7",
+    "streamlit>=1.43.2",
+    "types-requests>=2.32.0.20250306",
+]
