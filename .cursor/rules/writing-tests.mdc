@@ -1,0 +1,13 @@
+---
+description: Writing and modifying tests
+globs: 
+alwaysApply: false
+---
+
+# Your rule content
+
+- When writing tests, make sure each test has a single responsibility. Don't cram multiple tests into one.
+- The test name should be very descriptive: if it fails, we should know exactly what went wrong from the name.
+- You can use pytest fixtures if needed in case there is a lot of duplication - don't create N tests if you can create 1 parametrized test instead.
+- Helpful commands for testing: `uv run pytest -v`
+- Check coverage when writing tests to see what's missing.

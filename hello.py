@@ -33,15 +33,49 @@ def parse_openapi_spec(url: str) -> OpenAPI:
     return OpenAPI.model_validate(spec)
 
 
-def select_endpoint(openapi_spec: OpenAPI):
+def generate_endpoint_descriptions(openapi_spec: OpenAPI):
+    path_map = openapi_spec.paths or {}
+    for path, path_item in path_map.items():
+        # Only process GET endpoints
+        if path_item.get:
+            pass
+
+
+def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
     # TODO: Implement endpoint selection logic
-    # For now, return None to indicate no endpoint selected
     return None
+
+
+def select_parameters(openapi_spec: OpenAPI, endpoint: str):
+    # TODO: Implement parameter selection logic
+    # For now, return None to indicate no parameters selected
+    return None
+
+
+def get_path_server_url(openapi_spec: OpenAPI, path: str | None = None) -> str:
+    """Get the server URL from the OpenAPI spec.
+    If path is provided, checks for path-level servers first, then falls back to root-level servers.
+    If no path is provided or no path-level servers exist, uses root-level servers.
+    Raises ValueError if no server URL is found."""
+
+    # If path is provided, check path-level servers first
+    if path and openapi_spec.paths and path in openapi_spec.paths:
+        path_item = openapi_spec.paths[path]
+        if path_item.servers and len(path_item.servers) > 0:
+            return path_item.servers[0].url
+
+    # Check root-level servers
+    if openapi_spec.servers and len(openapi_spec.servers) > 0:
+        return openapi_spec.servers[0].url
+
+    # If no servers are defined, raise an error
+    raise ValueError("No server url found in openapi spec")
 
 
 def openapi_to_restapi_source(openapi_spec: OpenAPI, endpoint=None):
     # TODO: Implement conversion logic
     # For now, return a dummy source
+    _ = get_path_server_url(openapi_spec)  # Verify server URL exists
     return []
 
 
