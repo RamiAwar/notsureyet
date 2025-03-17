@@ -10,7 +10,9 @@ import yaml
 from dlt.sources.rest_api import rest_api_resources
 from dlt.sources.rest_api.typing import RESTAPIConfig
 from openapi_pydantic.v3.v3_0 import OpenAPI as OpenAPI30
+from openapi_pydantic.v3.v3_0 import Parameter as ParameterV30
 from openapi_pydantic.v3.v3_1 import OpenAPI as OpenAPI31
+from openapi_pydantic.v3.v3_1 import Parameter as ParameterV31
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.format_as_xml import format_as_xml
 
@@ -60,7 +62,7 @@ def generate_endpoint_descriptions(openapi_spec: OpenAPI) -> dict[str, Any]:
     for path, path_item in path_map.items():
         # Only process GET endpoints
         if path_item.get:
-            descriptions[path] = path_item.model_dump(mode="json")
+            descriptions[path] = path_item.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     return descriptions
 
@@ -125,7 +127,7 @@ def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
     return result.data
 
 
-def select_parameters(openapi_spec: OpenAPI, endpoint: str):
+def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
     """Given an endpoint, select the parameters to build the API call.
     This includes query and path parameters. Validation should be based on
     the endpoint's openapi spec.
@@ -141,14 +143,75 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str):
     }
     """
 
+    # Extract endpoint parameters description
+    if openapi_spec.paths and endpoint in openapi_spec.paths:
+        endpoint_spec = openapi_spec.paths[endpoint]
+
+        if endpoint_spec.get and endpoint_spec.get.parameters:
+            parameter_descriptions = {}
+            for parameter in endpoint_spec.get.parameters:
+                # TODO: Handle references, not only resolved parameters
+                if isinstance(parameter, ParameterV30 | ParameterV31):
+                    parameter_descriptions[parameter.name] = parameter.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    )
+        else:
+            parameter_descriptions = {}
+    else:
+        raise ValueError(f"Endpoint {endpoint} not found in openapi spec")
+
+    @dataclass
+    class SelectParametersDeps:
+        parameters: list[str]
+
     agent = Agent(
         "openai:gpt-3.5-turbo",
         retries=2,
-        deps_type=Deps,
-        result_type=str,
+        deps_type=SelectParametersDeps,
+        result_type=dict[str, Any],
         instrument=True,
     )
-    pass
+
+    @agent.result_validator
+    async def validate_result(ctx: RunContext[SelectParametersDeps], result: dict[str, Any]) -> dict[str, Any]:
+        if result.keys() != ctx.deps.parameters:
+            raise ModelRetry(f"Invalid parameters: {result.keys()}. Expected parameters: {ctx.deps.parameters}")
+        else:
+            return result
+
+    @agent.system_prompt
+    async def system_prompt() -> str:
+        return f"""\
+    You are a smart API engineer that can help pick the query and path parameter values to use to answer a user's query.
+
+    We've got a list of parameters and their openapi spec, you should look at them and decide what values to use for the parameters.
+
+    Return a dictionary of parameters with the parameter name as the key and the parameter value as the value.
+    Return nothing else.
+
+    Example:
+    User query: "What's the weather in Berlin?"
+    Endpoint: "/weather"
+    Parameters:
+    {{
+        "location": "str",
+        "timezone": "str",
+    }}
+
+
+    Response:
+    {{
+        "location": "Berlin",
+        "timezone": "Europe/Berlin",
+    }}
+
+    Available parameters:
+    {format_as_xml(parameter_descriptions)}
+    """
+
+    deps = SelectParametersDeps(parameters=list(parameter_descriptions.keys()))
+    result = agent.run_sync(user_query, deps=deps)
+    return result.data
 
 
 def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
@@ -204,16 +267,23 @@ def generate_endpoint_dlt_rest_api_source(openapi_spec: OpenAPI, endpoint: str):
 
 
 def main():
-    spec_url = "https://dwd.api.bund.dev/openapi.yaml"
+    spec_url = (
+        "https://raw.githubusercontent.com/open-meteo/open-meteo/3ff33913b216614c8c6751c18d336af3b1291f92/openapi.yml"
+    )
 
     # Extract structure from openapi spec
     openapi_spec = parse_openapi_spec(url=spec_url)
 
     # Select single endpoint (exclude non-GET endpoints)
-    endpoint = select_endpoint(openapi_spec, user_query="Are there any coastal warnings now?")
+    query = "What's the weather in Berlin?"
+    endpoint = select_endpoint(openapi_spec, user_query=query)
     # IMPROVE: Generate an explanation of why the endpoint was selected/not selected
     if endpoint is None:
         raise ValueError("No endpoint matches the query.")
+
+    # Select parameters
+    parameters = select_parameters(openapi_spec, endpoint, user_query=query)
+    print(parameters)
 
     # source = generate_endpoint_dlt_rest_api_source(openapi_spec, endpoint)
 
