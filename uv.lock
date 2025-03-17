@@ -1835,12 +1835,16 @@ dependencies = [
     { name = "logfire" },
     { name = "openapi-pydantic" },
     { name = "pydantic-ai" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "responses" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "python-dotenv" },
     { name = "streamlit" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
@@ -1852,12 +1856,16 @@ requires-dist = [
     { name = "logfire", specifier = ">=3.8.1" },
     { name = "openapi-pydantic", specifier = ">=0.5.1" },
     { name = "pydantic-ai", specifier = ">=0.0.40" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
-    { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "responses", specifier = ">=0.25.7" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "streamlit", specifier = ">=1.43.2" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20241230" },
     { name = "types-requests", specifier = ">=2.32.0.20250306" },
