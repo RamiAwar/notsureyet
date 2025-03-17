@@ -5,3 +5,5 @@ alwaysApply: false
 ---
 
 - Do not ever expose my env vars. Just stop executing and ask me to fix whatever needs fixing. NEVER expose sensitive data to the terminal or chat interface, they're not secure. I trust you enough to give you access to .env files and other sensitive info so you can work efficiently.
+
+- When using uv, never use PIP. To add modules: `uv add`. To remove modules: `uv remove`. To run python commands: `uv run pytest ...` or `uv run python ...`. DO NOT USE PIP.
