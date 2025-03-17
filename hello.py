@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import dlt
 import requests
@@ -33,12 +34,15 @@ def parse_openapi_spec(url: str) -> OpenAPI:
     return OpenAPI.model_validate(spec)
 
 
-def generate_endpoint_descriptions(openapi_spec: OpenAPI):
+def generate_endpoint_descriptions(openapi_spec: OpenAPI) -> dict[str, Any]:
+    descriptions = {}
     path_map = openapi_spec.paths or {}
     for path, path_item in path_map.items():
         # Only process GET endpoints
         if path_item.get:
-            pass
+            descriptions[path] = path_item.model_dump(mode="json")
+
+    return descriptions
 
 
 def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
@@ -52,13 +56,12 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str):
     return None
 
 
-def get_path_server_url(openapi_spec: OpenAPI, path: str | None = None) -> str:
+def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
     """Get the server URL from the OpenAPI spec.
-    If path is provided, checks for path-level servers first, then falls back to root-level servers.
-    If no path is provided or no path-level servers exist, uses root-level servers.
+    Checks for path-level servers first, then falls back to root-level servers.
     Raises ValueError if no server URL is found."""
 
-    # If path is provided, check path-level servers first
+    # Check path-level servers first
     if path and openapi_spec.paths and path in openapi_spec.paths:
         path_item = openapi_spec.paths[path]
         if path_item.servers and len(path_item.servers) > 0:

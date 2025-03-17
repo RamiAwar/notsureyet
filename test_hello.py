@@ -9,7 +9,6 @@ from hello import (
     download_spec,
     generate_endpoint_descriptions,
     get_path_server_url,
-    openapi_to_restapi_source,
     parse_openapi_spec,
     select_endpoint,
     select_parameters,
@@ -273,11 +272,6 @@ def test_parse_openapi_spec_invalid_schema(mock_responses, invalid_openapi_spec)
     assert "info" in str(exc_info.value).lower()  # Error should mention missing 'info' field
 
 
-def test_get_server_url_uses_root_server_when_available(spec_with_root_servers):
-    spec = OpenAPI.model_validate(spec_with_root_servers)
-    assert get_path_server_url(spec) == "https://api.example.com/v1"
-
-
 def test_get_server_url_uses_root_server_when_path_has_no_override(spec_with_root_servers):
     spec = OpenAPI.model_validate(spec_with_root_servers)
     assert get_path_server_url(spec, "/some/path") == "https://api.example.com/v1"
@@ -295,20 +289,6 @@ def test_get_server_url_raises_error_for_path_without_server(spec_with_path_serv
         get_path_server_url(spec, "/nonexistent")
 
 
-def test_get_server_url_raises_error_when_no_path_and_no_root_servers(spec_with_path_servers):
-    spec = OpenAPI.model_validate(spec_with_path_servers)
-    spec.servers = []  # Manually remove root servers
-    with pytest.raises(ValueError, match="No server url found in openapi spec"):
-        get_path_server_url(spec)
-
-
-def test_get_server_url_raises_error_when_no_servers_defined(spec_without_servers):
-    spec = OpenAPI.model_validate(spec_without_servers)
-    spec.servers = []  # Manually remove root servers
-    with pytest.raises(ValueError, match="No server url found in openapi spec"):
-        get_path_server_url(spec)
-
-
 def test_get_server_url_raises_error_for_path_when_no_servers_defined(spec_without_servers):
     spec = OpenAPI.model_validate(spec_without_servers)
     spec.servers = []  # Manually remove root servers
@@ -318,13 +298,157 @@ def test_get_server_url_raises_error_for_path_when_no_servers_defined(spec_witho
 
 def test_generate_endpoint_descriptions_with_get_endpoints(weather_api_spec):
     spec = OpenAPI.model_validate(weather_api_spec)
-    # Currently the function doesn't return anything, so we just verify it runs without error
-    generate_endpoint_descriptions(spec)
+    descriptions = generate_endpoint_descriptions(spec)
+
+    assert isinstance(descriptions, dict)
+    assert len(descriptions) == 1
+    assert "/locations/{location_id}/weather" in descriptions
+
+    path_desc = descriptions["/locations/{location_id}/weather"]
+    assert path_desc["get"]["summary"] == "Get weather forecast"
+    assert path_desc["get"]["description"] == "Get detailed weather forecast for a specific location"
+    assert len(path_desc["get"]["parameters"]) == 4
+
+    # Verify parameters are included
+    params = path_desc["get"]["parameters"]
+    param_names = [p["name"] for p in params]
+    assert "location_id" in param_names
+    assert "latitude" in param_names
+    assert "longitude" in param_names
+    assert "units" in param_names
 
 
 def test_generate_endpoint_descriptions_with_empty_paths():
     spec = OpenAPI.model_validate({"openapi": "3.1.0", "info": {"title": "Empty API", "version": "1.0.0"}, "paths": {}})
-    generate_endpoint_descriptions(spec)
+    descriptions = generate_endpoint_descriptions(spec)
+    assert descriptions == {}
+
+
+def test_generate_endpoint_descriptions_with_mixed_methods():
+    spec = OpenAPI.model_validate(
+        {
+            "openapi": "3.1.0",
+            "info": {"title": "Mixed Methods API", "version": "1.0.0"},
+            "paths": {
+                "/users": {
+                    "get": {"summary": "List users", "responses": {"200": {"description": "OK"}}},
+                    "post": {"summary": "Create user", "responses": {"201": {"description": "Created"}}},
+                },
+                "/items": {"put": {"summary": "Update item", "responses": {"200": {"description": "OK"}}}},
+            },
+        }
+    )
+    descriptions = generate_endpoint_descriptions(spec)
+
+    # Should only include the path with GET method
+    assert len(descriptions) == 1
+    assert "/users" in descriptions
+    assert descriptions["/users"]["get"]["summary"] == "List users"
+    assert "/items" not in descriptions  # PUT-only endpoint should be excluded
+
+
+def test_generate_endpoint_descriptions_with_parameters():
+    spec = OpenAPI.model_validate(
+        {
+            "openapi": "3.1.0",
+            "info": {"title": "Parameterized API", "version": "1.0.0"},
+            "paths": {
+                "/users/{user_id}/posts": {
+                    "get": {
+                        "summary": "Get user posts",
+                        "parameters": [
+                            {"name": "user_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                            {
+                                "name": "limit",
+                                "in": "query",
+                                "required": False,
+                                "schema": {"type": "integer", "default": 10},
+                            },
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                    }
+                }
+            },
+        }
+    )
+    descriptions = generate_endpoint_descriptions(spec)
+
+    assert isinstance(descriptions, dict)
+    assert len(descriptions) == 1
+    assert "/users/{user_id}/posts" in descriptions
+
+    path_desc = descriptions["/users/{user_id}/posts"]
+    assert path_desc["get"]["summary"] == "Get user posts"
+
+    # Debug print to see structure
+    print("\nParameter structure:", path_desc["get"]["parameters"][0])
+
+    # Verify parameters
+    params = path_desc["get"]["parameters"]
+    assert len(params) == 2
+
+    # Check path parameter
+    path_param = next(p for p in params if p["param_in"] == "path")
+    assert path_param["name"] == "user_id"
+    assert path_param["required"] is True
+    assert path_param["param_schema"]["type"] == "string"
+
+    # Check query parameter
+    query_param = next(p for p in params if p["param_in"] == "query")
+    assert query_param["name"] == "limit"
+    assert query_param["required"] is False
+    assert query_param["param_schema"]["type"] == "integer"
+    assert query_param["param_schema"]["default"] == 10
+
+
+def test_generate_endpoint_descriptions_with_no_get_endpoints():
+    spec = OpenAPI.model_validate(
+        {
+            "openapi": "3.1.0",
+            "info": {"title": "No GET API", "version": "1.0.0"},
+            "paths": {
+                "/users": {
+                    "post": {"summary": "Create user", "responses": {"201": {"description": "Created"}}},
+                    "put": {"summary": "Update user", "responses": {"200": {"description": "OK"}}},
+                }
+            },
+        }
+    )
+    descriptions = generate_endpoint_descriptions(spec)
+    assert descriptions == {}  # No GET endpoints should result in empty dict
+
+
+def test_generate_endpoint_descriptions_with_path_level_parameters():
+    spec = OpenAPI.model_validate(
+        {
+            "openapi": "3.1.0",
+            "info": {"title": "Path Parameters API", "version": "1.0.0"},
+            "paths": {
+                "/organizations/{org_id}/users": {
+                    "parameters": [{"name": "org_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "get": {
+                        "summary": "List organization users",
+                        "parameters": [
+                            {"name": "role", "in": "query", "required": False, "schema": {"type": "string"}}
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                    },
+                }
+            },
+        }
+    )
+    descriptions = generate_endpoint_descriptions(spec)
+
+    assert len(descriptions) == 1
+    path_desc = descriptions["/organizations/{org_id}/users"]
+
+    # Verify both path-level and operation-level parameters are included
+    assert "parameters" in path_desc
+    assert len(path_desc["parameters"]) == 1
+    assert path_desc["parameters"][0]["name"] == "org_id"
+
+    assert len(path_desc["get"]["parameters"]) == 1
+    assert path_desc["get"]["parameters"][0]["name"] == "role"
 
 
 def test_select_endpoint_returns_none():
@@ -336,9 +460,3 @@ def test_select_endpoint_returns_none():
 def test_select_parameters_returns_none():
     spec = OpenAPI.model_validate({"openapi": "3.1.0", "info": {"title": "Test API", "version": "1.0.0"}, "paths": {}})
     assert select_parameters(spec, "/some/path") is None
-
-
-def test_openapi_to_restapi_source_returns_empty_list(weather_api_spec):
-    spec = OpenAPI.model_validate(weather_api_spec)
-    assert openapi_to_restapi_source(spec) == []
-    assert openapi_to_restapi_source(spec, "/some/path") == []
