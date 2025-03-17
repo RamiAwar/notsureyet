@@ -7,16 +7,20 @@ import dlt
 import logfire
 import requests
 import yaml
-from openapi_pydantic import OpenAPI
+from dlt.sources.rest_api import rest_api_resources
+from dlt.sources.rest_api.typing import RESTAPIConfig
+from openapi_pydantic.v3.v3_0 import OpenAPI as OpenAPI30
+from openapi_pydantic.v3.v3_1 import OpenAPI as OpenAPI31
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.format_as_xml import format_as_xml
+
+# Type alias for OpenAPI 3.0 and 3.1
+OpenAPI = OpenAPI30 | OpenAPI31
 
 logfire.configure(token=os.getenv("LOGFIRE_TOKEN"))
 logfire.instrument_openai()
 
 logfire.info("Hello, {place}!", place="World")
-
-spec_url = "https://raw.githubusercontent.com/open-meteo/open-meteo/refs/heads/main/openapi.yml"
 
 
 def download_spec(url: str) -> dict:
@@ -40,8 +44,14 @@ def parse_openapi_spec(url: str) -> OpenAPI:
     # Download file into dict, can be json or yaml spec
     spec = download_spec(url)
 
-    # Parse the spec into a pydantic model
-    return OpenAPI.model_validate(spec)
+    # Determine OpenAPI version
+    version = spec.get("openapi", "")
+    if version.startswith("3.1"):
+        return OpenAPI31.model_validate(spec)
+    elif version.startswith("3.0"):
+        return OpenAPI30.model_validate(spec)
+    else:
+        raise ValueError(f"Unsupported OpenAPI version: {version}")
 
 
 def generate_endpoint_descriptions(openapi_spec: OpenAPI) -> dict[str, Any]:
@@ -116,9 +126,29 @@ def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
 
 
 def select_parameters(openapi_spec: OpenAPI, endpoint: str):
-    # TODO: Implement parameter selection logic
-    # For now, return None to indicate no parameters selected
-    return None
+    """Given an endpoint, select the parameters to build the API call.
+    This includes query and path parameters. Validation should be based on
+    the endpoint's openapi spec.
+    ex.
+    {
+        "sort": "updated",
+        "direction": "desc",
+        "state": "open",
+        "since": {
+            "type": "incremental",
+            "cursor_path": "updated_at",
+            "initial_value": "2024-01-25T11:21:28Z",
+    }
+    """
+
+    agent = Agent(
+        "openai:gpt-3.5-turbo",
+        retries=2,
+        deps_type=Deps,
+        result_type=str,
+        instrument=True,
+    )
+    pass
 
 
 def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
@@ -140,24 +170,55 @@ def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
     raise ValueError("No server url found in openapi spec")
 
 
-def openapi_to_restapi_source(openapi_spec: OpenAPI, endpoint=None):
-    # TODO: Implement conversion logic
-    # For now, return a dummy source
-    _ = get_path_server_url(openapi_spec, endpoint or "/")  # Verify server URL exists
-    return []
+def generate_endpoint_dlt_rest_api_source(openapi_spec: OpenAPI, endpoint: str):
+    server_url = get_path_server_url(openapi_spec, endpoint)  # Verify server URL exists
+
+    config: RESTAPIConfig = {
+        "client": {
+            "base_url": server_url,
+            # TODO: Support optional headers
+            # TODO: Support auth types
+            # "auth": {
+            #     "token": dlt.secrets["your_api_token"],
+            # },
+            # TODO: Support pagination
+            # "paginator": {
+            #     "type": "json_link",
+            #     "next_url_path": "paging.next",
+            # },
+        },
+        "resources": [
+            # TODO: Support resource relationships
+            # Only include the endpoint we selected
+            {
+                "name": endpoint,
+                "endpoint": {
+                    "path": endpoint,
+                    "params": {},
+                },
+            },
+        ],
+    }
+
+    return rest_api_resources(config)
 
 
 def main():
+    spec_url = "https://dwd.api.bund.dev/openapi.yaml"
+
     # Extract structure from openapi spec
     openapi_spec = parse_openapi_spec(url=spec_url)
 
     # Select single endpoint (exclude non-GET endpoints)
-    endpoint = select_endpoint(openapi_spec)
+    endpoint = select_endpoint(openapi_spec, user_query="Are there any coastal warnings now?")
+    # IMPROVE: Generate an explanation of why the endpoint was selected/not selected
+    if endpoint is None:
+        raise ValueError("No endpoint matches the query.")
 
-    source = openapi_to_restapi_source(openapi_spec, endpoint)
+    # source = generate_endpoint_dlt_rest_api_source(openapi_spec, endpoint)
 
-    pipeline = dlt.pipeline(pipeline_name="test", destination="duckdb", dataset_name="chat_1_call_1")
-    pipeline.run(source)
+    # pipeline = dlt.pipeline(pipeline_name="test", destination="duckdb", dataset_name="chat_1_call_1")
+    # pipeline.run(source)
 
 
 if __name__ == "__main__":
