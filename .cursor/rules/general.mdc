@@ -1,0 +1,7 @@
+---
+description: General Rules
+globs: 
+alwaysApply: false
+---
+
+- Do not ever expose my env vars. Just stop executing and ask me to fix whatever needs fixing. NEVER expose sensitive data to the terminal or chat interface, they're not secure. I trust you enough to give you access to .env files and other sensitive info so you can work efficiently.

@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "dlt[duckdb]>=1.8.1",
+    "logfire>=3.8.1",
     "openapi-pydantic>=0.5.1",
+    "pydantic-ai>=0.0.40",
     "pytest>=8.3.5",
     "pytest-cov>=6.0.0",
     "pyyaml>=6.0.2",

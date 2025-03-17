@@ -1,10 +1,20 @@
 import json
+import os
+from dataclasses import dataclass
 from typing import Any
 
 import dlt
+import logfire
 import requests
 import yaml
 from openapi_pydantic import OpenAPI
+from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai.format_as_xml import format_as_xml
+
+logfire.configure(token=os.getenv("LOGFIRE_TOKEN"))
+logfire.instrument_openai()
+
+logfire.info("Hello, {place}!", place="World")
 
 spec_url = "https://raw.githubusercontent.com/open-meteo/open-meteo/refs/heads/main/openapi.yml"
 
@@ -45,9 +55,64 @@ def generate_endpoint_descriptions(openapi_spec: OpenAPI) -> dict[str, Any]:
     return descriptions
 
 
+@dataclass
+class Deps:
+    available_endpoints: list[str]
+
+
 def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
-    # TODO: Implement endpoint selection logic
-    return None
+    agent = Agent(
+        "openai:gpt-3.5-turbo",
+        retries=2,
+        deps_type=Deps,
+        result_type=str,
+        instrument=True,
+    )
+
+    @agent.result_validator
+    async def validate_result(ctx: RunContext[Deps], result: str) -> str:
+        if result not in [*ctx.deps.available_endpoints, "null"]:
+            raise ModelRetry(f"Invalid endpoint: {result}. Available endpoints: {ctx.deps.available_endpoints}")
+        else:
+            return result
+
+    endpoint_descriptions = generate_endpoint_descriptions(openapi_spec)
+
+    @agent.system_prompt
+    async def system_prompt() -> str:
+        nonlocal endpoint_descriptions
+        return f"""\
+    You are a smart assistant that can help pick the best endpoint from a list of endpoints based on
+    a user's query. Given the list of endpoints and their openapi spec, you should look at the parameters
+    and the user's query to see which endpoint can achieve the user's goal.
+
+    Look at the inputs first, if the user is looking for the weather in a specific location for example,
+    we should look for an endpoint that supports filtering by location. Otherwise none of the endpoints
+    would be able to satisfy the user's query.
+
+    Second, look at the response schemas. If the user wants the chance of rain for example and the output only
+    provides temperature, then we should try to find another endpoint that better satisfies
+    the user's query.
+
+    Return a single endpoint string. Do not include your reasoning in the response.
+    For example, if we have a list of endpoints:
+    GET /tracking/<tracking_code>
+    GET /messages
+    and the user asks for the shipment details, you should return ONLY "/tracking/<tracking_code>", nothing else.
+
+    If none of the endpoints seem to be able to satisfy the user's query, return 'null'.
+
+    Available endpoints:
+    {format_as_xml(endpoint_descriptions)}
+
+    """
+
+    available_endpoints = list(endpoint_descriptions.keys())
+    deps = Deps(available_endpoints=available_endpoints)
+    result = agent.run_sync(user_query, deps=deps)
+    if result.data == "null":
+        return None
+    return result.data
 
 
 def select_parameters(openapi_spec: OpenAPI, endpoint: str):
@@ -78,7 +143,7 @@ def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
 def openapi_to_restapi_source(openapi_spec: OpenAPI, endpoint=None):
     # TODO: Implement conversion logic
     # For now, return a dummy source
-    _ = get_path_server_url(openapi_spec)  # Verify server URL exists
+    _ = get_path_server_url(openapi_spec, endpoint or "/")  # Verify server URL exists
     return []
 
 

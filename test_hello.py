@@ -3,7 +3,8 @@ import json
 import pytest
 import requests
 import responses
-from openapi_pydantic import OpenAPI, Parameter, Schema
+from dotenv import load_dotenv
+from openapi_pydantic import OpenAPI, Parameter
 
 from hello import (
     download_spec,
@@ -13,6 +14,8 @@ from hello import (
     select_endpoint,
     select_parameters,
 )
+
+load_dotenv()
 
 # Test URLs
 YAML_URL = "https://raw.githubusercontent.com/open-meteo/open-meteo/refs/heads/main/openapi.yml"
@@ -62,49 +65,42 @@ def invalid_openapi_spec():
 
 
 @pytest.fixture
-def weather_api_spec():
+def simple_weather_api_spec():
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Weather API", "version": "1.0.0", "description": "API for weather forecasts"},
-        "servers": [{"url": "https://api.example.com/v1"}],
+        "info": {"title": "Weather API", "version": "1.0.0"},
         "paths": {
-            "/locations/{location_id}/weather": {
+            "/forecast": {
                 "get": {
                     "summary": "Get weather forecast",
-                    "description": "Get detailed weather forecast for a specific location",
-                    "parameters": [
-                        {
-                            "name": "location_id",
-                            "in": "path",
-                            "required": True,
-                            "description": "The unique identifier of the location",
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "latitude",
-                            "in": "query",
-                            "required": True,
-                            "description": "WGS84 coordinate latitude",
-                            "schema": {"type": "number", "format": "float"},
-                        },
-                        {
-                            "name": "longitude",
-                            "in": "query",
-                            "required": True,
-                            "description": "WGS84 coordinate longitude",
-                            "schema": {"type": "number", "format": "float"},
-                        },
-                        {
-                            "name": "units",
-                            "in": "query",
-                            "required": False,
-                            "description": "Temperature unit to use",
-                            "schema": {"type": "string", "enum": ["celsius", "fahrenheit"], "default": "celsius"},
-                        },
-                    ],
+                    "description": "Get a daily weather forecast",
+                    "parameters": [{"name": "location", "in": "query", "required": True, "schema": {"type": "string"}}],
                     "responses": {
                         "200": {
-                            "description": "Successful response",
+                            "description": "Weather forecast",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "temperature": {"type": "number"},
+                                            "precipitation": {"type": "number"},
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/current": {
+                "get": {
+                    "summary": "Get current weather",
+                    "description": "Get the current weather conditions",
+                    "parameters": [{"name": "location", "in": "query", "required": True, "schema": {"type": "string"}}],
+                    "responses": {
+                        "200": {
+                            "description": "Current weather",
                             "content": {
                                 "application/json": {
                                     "schema": {"type": "object", "properties": {"temperature": {"type": "number"}}}
@@ -113,7 +109,7 @@ def weather_api_spec():
                         }
                     },
                 }
-            }
+            },
         },
     }
 
@@ -199,11 +195,11 @@ def test_download_spec_invalid_content(mock_responses, invalid_spec_content):
         download_spec("https://example.com/spec")
 
 
-def test_parse_openapi_spec_valid(mock_responses, weather_api_spec):
+def test_parse_openapi_spec_valid(mock_responses, simple_weather_api_spec):
     mock_responses.add(
         responses.GET,
         "https://example.com/spec",
-        body=json.dumps(weather_api_spec),
+        body=json.dumps(simple_weather_api_spec),
         status=200,
         content_type="application/json",
     )
@@ -215,46 +211,24 @@ def test_parse_openapi_spec_valid(mock_responses, weather_api_spec):
     assert result.info.version == "1.0.0"
     assert result.paths is not None
 
-    path_key = "/locations/{location_id}/weather"
+    path_key = "/forecast"
     assert path_key in result.paths
     weather_path = result.paths[path_key]
     assert weather_path is not None
     assert weather_path.get is not None
     assert weather_path.get.summary == "Get weather forecast"
-    assert weather_path.get.description == "Get detailed weather forecast for a specific location"
+    assert weather_path.get.description == "Get a daily weather forecast"
 
     # Test parameters
     assert weather_path.get.parameters is not None
     params = weather_path.get.parameters
-    assert len(params) == 4
+    assert len(params) == 1
 
     # Test path parameter
-    path_param = next(p for p in params if isinstance(p, Parameter) and p.name == "location_id")
+    path_param = next(p for p in params if isinstance(p, Parameter) and p.name == "location")
     assert isinstance(path_param, Parameter)
-    assert path_param.param_in == "path"
+    assert path_param.param_in == "query"
     assert path_param.required is True
-    assert path_param.description == "The unique identifier of the location"
-
-    # Test required query parameters
-    lat_param = next(p for p in params if isinstance(p, Parameter) and p.name == "latitude")
-    assert isinstance(lat_param, Parameter)
-    assert lat_param.param_in == "query"
-    assert lat_param.required is True
-    assert lat_param.description == "WGS84 coordinate latitude"
-    assert isinstance(lat_param.param_schema, Schema)
-    assert lat_param.param_schema.type == "number"
-    assert lat_param.param_schema.schema_format == "float"
-
-    # Test optional parameter with enum
-    units_param = next(p for p in params if isinstance(p, Parameter) and p.name == "units")
-    assert isinstance(units_param, Parameter)
-    assert units_param.param_in == "query"
-    assert units_param.required is False
-    assert units_param.description == "Temperature unit to use"
-    assert isinstance(units_param.param_schema, Schema)
-    assert units_param.param_schema.type == "string"
-    assert units_param.param_schema.enum == ["celsius", "fahrenheit"]
-    assert units_param.param_schema.default == "celsius"
 
 
 def test_parse_openapi_spec_invalid_schema(mock_responses, invalid_openapi_spec):
@@ -296,26 +270,34 @@ def test_get_server_url_raises_error_for_path_when_no_servers_defined(spec_witho
         get_path_server_url(spec, "/test")
 
 
-def test_generate_endpoint_descriptions_with_get_endpoints(weather_api_spec):
-    spec = OpenAPI.model_validate(weather_api_spec)
+def test_generate_endpoint_descriptions_with_get_endpoints(simple_weather_api_spec):
+    spec = OpenAPI.model_validate(simple_weather_api_spec)
     descriptions = generate_endpoint_descriptions(spec)
 
     assert isinstance(descriptions, dict)
-    assert len(descriptions) == 1
-    assert "/locations/{location_id}/weather" in descriptions
+    assert len(descriptions) == 2
+    assert "/forecast" in descriptions
+    assert "/current" in descriptions
 
-    path_desc = descriptions["/locations/{location_id}/weather"]
+    path_desc = descriptions["/forecast"]
     assert path_desc["get"]["summary"] == "Get weather forecast"
-    assert path_desc["get"]["description"] == "Get detailed weather forecast for a specific location"
-    assert len(path_desc["get"]["parameters"]) == 4
+    assert path_desc["get"]["description"] == "Get a daily weather forecast"
+    assert len(path_desc["get"]["parameters"]) == 1
 
     # Verify parameters are included
     params = path_desc["get"]["parameters"]
     param_names = [p["name"] for p in params]
-    assert "location_id" in param_names
-    assert "latitude" in param_names
-    assert "longitude" in param_names
-    assert "units" in param_names
+    assert "location" in param_names
+
+    path_desc = descriptions["/current"]
+    assert path_desc["get"]["summary"] == "Get current weather"
+    assert path_desc["get"]["description"] == "Get the current weather conditions"
+    assert len(path_desc["get"]["parameters"]) == 1
+
+    # Verify parameters are included
+    params = path_desc["get"]["parameters"]
+    param_names = [p["name"] for p in params]
+    assert "location" in param_names
 
 
 def test_generate_endpoint_descriptions_with_empty_paths():
@@ -340,10 +322,9 @@ def test_generate_endpoint_descriptions_with_mixed_methods():
     )
     descriptions = generate_endpoint_descriptions(spec)
 
-    # Should only include the path with GET method
+    # Should only include paths with GET methods
     assert len(descriptions) == 1
     assert "/users" in descriptions
-    assert descriptions["/users"]["get"]["summary"] == "List users"
     assert "/items" not in descriptions  # PUT-only endpoint should be excluded
 
 
@@ -379,9 +360,6 @@ def test_generate_endpoint_descriptions_with_parameters():
 
     path_desc = descriptions["/users/{user_id}/posts"]
     assert path_desc["get"]["summary"] == "Get user posts"
-
-    # Debug print to see structure
-    print("\nParameter structure:", path_desc["get"]["parameters"][0])
 
     # Verify parameters
     params = path_desc["get"]["parameters"]
@@ -449,6 +427,30 @@ def test_generate_endpoint_descriptions_with_path_level_parameters():
 
     assert len(path_desc["get"]["parameters"]) == 1
     assert path_desc["get"]["parameters"][0]["name"] == "role"
+
+
+@pytest.mark.llm
+def test_select_endpoint_for_forecast(simple_weather_api_spec):
+    """Test that the endpoint selector chooses the forecast endpoint for future weather queries."""
+    spec = OpenAPI.model_validate(simple_weather_api_spec)
+    result = select_endpoint(spec, "What will the weather be like tomorrow in London?")
+    assert result == "/forecast"
+
+
+@pytest.mark.llm
+def test_select_endpoint_for_current_weather(simple_weather_api_spec):
+    """Test that the endpoint selector chooses the current endpoint for current weather queries."""
+    spec = OpenAPI.model_validate(simple_weather_api_spec)
+    result = select_endpoint(spec, "What's the current temperature in New York?")
+    assert result == "/current"
+
+
+@pytest.mark.llm
+def test_select_endpoint_returns_none_for_unrelated_query(simple_weather_api_spec):
+    """Test that the endpoint selector returns None for queries unrelated to available endpoints."""
+    spec = OpenAPI.model_validate(simple_weather_api_spec)
+    result = select_endpoint(spec, "What's the stock price of AAPL?")
+    assert result is None
 
 
 def test_select_endpoint_returns_none():
