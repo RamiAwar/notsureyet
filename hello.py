@@ -165,23 +165,18 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
     class SelectParametersDeps:
         parameters: list[str]
 
-    class Parameters(BaseModel):
-        parameters: dict[str, Any]
-
     agent = Agent(
         "openai:gpt-3.5-turbo",
         retries=2,
         deps_type=SelectParametersDeps,
-        result_type=Parameters,
+        result_type=dict[str, Any],
         instrument=True,
     )
 
     @agent.result_validator
-    async def validate_result(ctx: RunContext[SelectParametersDeps], result: Parameters) -> Parameters:
-        if result.parameters.keys() != ctx.deps.parameters:
-            raise ModelRetry(
-                f"Invalid parameters: {result.parameters.keys()}. Expected parameters: {ctx.deps.parameters}"
-            )
+    async def validate_result(ctx: RunContext[SelectParametersDeps], result: dict[str, Any]) -> dict[str, Any]:
+        if result.keys() != ctx.deps.parameters:
+            raise ModelRetry(f"Invalid parameters: {result.keys()}. Expected parameters: {ctx.deps.parameters}")
         else:
             return result
 
