@@ -13,6 +13,7 @@ from openapi_pydantic.v3.v3_0 import OpenAPI as OpenAPI30
 from openapi_pydantic.v3.v3_0 import Parameter as ParameterV30
 from openapi_pydantic.v3.v3_1 import OpenAPI as OpenAPI31
 from openapi_pydantic.v3.v3_1 import Parameter as ParameterV31
+from pydantic import BaseModel
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.format_as_xml import format_as_xml
 
@@ -164,18 +165,23 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
     class SelectParametersDeps:
         parameters: list[str]
 
+    class Parameters(BaseModel):
+        parameters: dict[str, Any]
+
     agent = Agent(
         "openai:gpt-3.5-turbo",
         retries=2,
         deps_type=SelectParametersDeps,
-        result_type=dict[str, Any],
+        result_type=Parameters,
         instrument=True,
     )
 
     @agent.result_validator
-    async def validate_result(ctx: RunContext[SelectParametersDeps], result: dict[str, Any]) -> dict[str, Any]:
-        if result.keys() != ctx.deps.parameters:
-            raise ModelRetry(f"Invalid parameters: {result.keys()}. Expected parameters: {ctx.deps.parameters}")
+    async def validate_result(ctx: RunContext[SelectParametersDeps], result: Parameters) -> Parameters:
+        if result.parameters.keys() != ctx.deps.parameters:
+            raise ModelRetry(
+                f"Invalid parameters: {result.parameters.keys()}. Expected parameters: {ctx.deps.parameters}"
+            )
         else:
             return result
 
@@ -197,7 +203,6 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
         "location": "str",
         "timezone": "str",
     }}
-
 
     Response:
     {{
