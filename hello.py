@@ -9,6 +9,8 @@ import requests
 import yaml
 from dlt.sources.rest_api import rest_api_resources
 from dlt.sources.rest_api.typing import RESTAPIConfig
+from dlt.sources.helpers.rest_client import RESTClient
+from dlt.sources.helpers.rest_client.paginators import SinglePagePaginator
 from mirascope import llm
 from mirascope.retries.tenacity import collect_errors
 from openapi_pydantic.v3.v3_0 import OpenAPI as OpenAPI30
@@ -175,8 +177,11 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
         return f"""\
     You are a smart API engineer that can help pick the query and path parameter values to use to answer a user's query.
     We've got a list of parameters and their openapi spec, you should look at them and decide what values to use for the parameters.
-    Return a dictionary of a single key "parameters" that has a list of key value pairs with the parameter name as the key and the parameter value as the value.
-    Return nothing else.
+    Return a dictionary of a single key "parameters" that has a list of key value pairs with the parameter name as the key and the parameter value as the value. DO NOT
+    pick parameters that are not in the provided list or values that do not match the spec. Go over the parameters you pick and see if there's a need
+    to provide additional ones that the user didn't think of but are required to get the right response. For example, if 
+    the user asks for the weather, we should also see how to return it (hourly, daily, etc) and add that to the parameters.
+
     Example:
     User query: "What's the weather in Berlin?"
     Endpoint: "/weather"
@@ -184,6 +189,7 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
     {{
         "location": "str",
         "timezone": "str",
+        "frequency": "str",
     }}
     Response:
     {{
@@ -197,6 +203,11 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
                 "name": "timezone",
                 "param_in": "query",
                 "value": "Europe/Berlin"
+            }},
+            {{
+                "name": "frequency",
+                "param_in": "query",
+                "value": "daily"
             }}
         ]
     }}
@@ -208,10 +219,19 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
 
     def _validate_parameter_names(v: list[ParameterIn]) -> list[ParameterIn]:
         nonlocal parameter_descriptions
-        if any(p.name not in parameter_descriptions for p in v):
+        invalid_names = set()
+        for param in v:
+            # Check if the parameter name is in the descriptions
+            if param.name not in parameter_descriptions:
+                invalid_names.add(param.name)
+            
+        # Construct specific error
+        if invalid_names:
             raise ValueError(
-                f"Invalid parameters - got {v}, you can only choose from: {list(parameter_descriptions.keys())}"
+                f"Invalid parameter names: {', '.join(invalid_names)}. "
+                f"Available parameters: {', '.join(parameter_descriptions.keys())}"
             )
+
         return v
 
     class GetParamsResult(BaseModel):
@@ -253,8 +273,9 @@ def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:
     raise ValueError("No server url found in openapi spec")
 
 
-def generate_endpoint_dlt_rest_api_source(openapi_spec: OpenAPI, endpoint: str):
-    server_url = get_path_server_url(openapi_spec, endpoint)  # Verify server URL exists
+def generate_endpoint_dlt_rest_api_source(openapi_spec: OpenAPI, endpoint: str, parameters: list[ParameterIn]) -> dlt.source:
+    # TODO: Verify server URL exists
+    server_url = get_path_server_url(openapi_spec, endpoint)
 
     config: RESTAPIConfig = {
         "client": {
@@ -265,19 +286,19 @@ def generate_endpoint_dlt_rest_api_source(openapi_spec: OpenAPI, endpoint: str):
             #     "token": dlt.secrets["your_api_token"],
             # },
             # TODO: Support pagination
-            # "paginator": {
-            #     "type": "json_link",
-            #     "next_url_path": "paging.next",
-            # },
+            "paginator": SinglePagePaginator(),
         },
         "resources": [
             # TODO: Support resource relationships
+            # TODO: Handle header/cookie params
             # Only include the endpoint we selected
             {
                 "name": endpoint,
                 "endpoint": {
                     "path": endpoint,
-                    "params": {},
+                    "params": {
+                        p.name: p.value for p in parameters if p.param_in in ["query", "path"]
+                    },
                 },
             },
         ],
@@ -295,7 +316,7 @@ def main():
     openapi_spec = parse_openapi_spec(url=spec_url)
 
     # Select single endpoint (exclude non-GET endpoints)
-    query = "What's the weather in Berlin?"
+    query = "What's the hourly weather at 52.52,13.41 (berlin)?"
     endpoint = select_endpoint(openapi_spec, user_query=query)
     # IMPROVE: Generate an explanation of why the endpoint was selected/not selected
     if endpoint is None:
@@ -305,10 +326,14 @@ def main():
     parameters = select_parameters(openapi_spec, endpoint, user_query=query)
     print(parameters)
 
-    # source = generate_endpoint_dlt_rest_api_source(openapi_spec, endpoint)
+    source = generate_endpoint_dlt_rest_api_source(openapi_spec, endpoint, parameters)
+    
+    client = RESTClient(base_url=get_path_server_url(openapi_spec, endpoint))
+    response = client.get(endpoint, params={p.name: p.value for p in parameters if p.param_in == "query"})
+    print(response.json())
 
-    # pipeline = dlt.pipeline(pipeline_name="test", destination="duckdb", dataset_name="chat_1_call_1")
-    # pipeline.run(source)
+    pipeline = dlt.pipeline(pipeline_name="test", destination="duckdb", dataset_name="chat2")
+    pipeline.run(source)
 
 
 if __name__ == "__main__":
