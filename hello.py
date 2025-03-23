@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import dlt
 import logfire
@@ -9,13 +9,16 @@ import requests
 import yaml
 from dlt.sources.rest_api import rest_api_resources
 from dlt.sources.rest_api.typing import RESTAPIConfig
+from mirascope import llm
+from mirascope.retries.tenacity import collect_errors
 from openapi_pydantic.v3.v3_0 import OpenAPI as OpenAPI30
 from openapi_pydantic.v3.v3_0 import Parameter as ParameterV30
 from openapi_pydantic.v3.v3_1 import OpenAPI as OpenAPI31
 from openapi_pydantic.v3.v3_1 import Parameter as ParameterV31
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel, ValidationError
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.format_as_xml import format_as_xml
+from tenacity import retry, stop_after_attempt
 
 # Type alias for OpenAPI 3.0 and 3.1
 OpenAPI = OpenAPI30 | OpenAPI31
@@ -73,6 +76,12 @@ class Deps:
     available_endpoints: list[str]
 
 
+class ParameterIn(BaseModel):
+    name: str
+    param_in: Literal["query", "path"]
+    value: str
+
+
 def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
     agent = Agent(
         "openai:gpt-3.5-turbo",
@@ -128,20 +137,10 @@ def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
     return result.data
 
 
-def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
+def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> list[ParameterIn]:
     """Given an endpoint, select the parameters to build the API call.
     This includes query and path parameters. Validation should be based on
     the endpoint's openapi spec.
-    ex.
-    {
-        "sort": "updated",
-        "direction": "desc",
-        "state": "open",
-        "since": {
-            "type": "incremental",
-            "cursor_path": "updated_at",
-            "initial_value": "2024-01-25T11:21:28Z",
-    }
     """
 
     # Extract endpoint parameters description
@@ -161,33 +160,17 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
     else:
         raise ValueError(f"Endpoint {endpoint} not found in openapi spec")
 
-    @dataclass
-    class SelectParametersDeps:
-        parameters: list[str]
+    # If no parameters, return empty list immediately without calling LLM
+    if not parameter_descriptions:
+        return []
 
-    agent = Agent(
-        "openai:gpt-3.5-turbo",
-        retries=2,
-        deps_type=SelectParametersDeps,
-        result_type=dict[str, Any],
-        instrument=True,
-    )
-
-    @agent.result_validator
-    async def validate_result(ctx: RunContext[SelectParametersDeps], result: dict[str, Any]) -> dict[str, Any]:
-        if result.keys() != ctx.deps.parameters:
-            raise ModelRetry(f"Invalid parameters: {result.keys()}. Expected parameters: {ctx.deps.parameters}")
-        else:
-            return result
-
-    @agent.system_prompt
-    async def system_prompt() -> str:
+    def system_prompt(parameter_descriptions: dict[str, Any]) -> str:
         return f"""\
     You are a smart API engineer that can help pick the query and path parameter values to use to answer a user's query.
 
     We've got a list of parameters and their openapi spec, you should look at them and decide what values to use for the parameters.
 
-    Return a dictionary of parameters with the parameter name as the key and the parameter value as the value.
+    Return a dictionary of a single key "parameters" that has a list of key value pairs with the parameter name as the key and the parameter value as the value.
     Return nothing else.
 
     Example:
@@ -201,17 +184,53 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str):
 
     Response:
     {{
-        "location": "Berlin",
-        "timezone": "Europe/Berlin",
+        "parameters": [
+            {{
+                "name": "location",
+                "param_in": "query",
+                "value": "Berlin"
+            }},
+            {{
+                "name": "timezone",
+                "param_in": "query",
+                "value": "Europe/Berlin"
+            }}
+        ]
     }}
 
     Available parameters:
     {format_as_xml(parameter_descriptions)}
+
+    User query:
+    {user_query}
     """
 
-    deps = SelectParametersDeps(parameters=list(parameter_descriptions.keys()))
-    result = agent.run_sync(user_query, deps=deps)
-    return result.data
+    def _validate_parameter_names(v: list[ParameterIn]) -> list[ParameterIn]:
+        nonlocal parameter_descriptions
+        if any(p.name not in parameter_descriptions for p in v):
+            raise ValueError(
+                f"Invalid parameters - got {v}, you can only choose from: {list(parameter_descriptions.keys())}"
+            )
+        return v
+
+    class GetParamsResult(BaseModel):
+        parameters: Annotated[list[ParameterIn], AfterValidator(_validate_parameter_names)]
+
+    @retry(stop=stop_after_attempt(3), after=collect_errors(ValidationError))
+    @llm.call(
+        provider="openai",
+        model="gpt-3.5-turbo",
+        json_mode=True,
+        response_model=GetParamsResult,
+    )
+    def llm_get_params(parameter_descriptions: dict[str, Any], user_query: str, *, errors: list[ValidationError] | None = None) -> str:
+        if errors:
+            print("errors", errors)
+            return f"Previous Error: {errors}\n\n{system_prompt(parameter_descriptions)}"
+        return system_prompt(parameter_descriptions)
+
+    result = llm_get_params(parameter_descriptions=parameter_descriptions, user_query=user_query)
+    return result.parameters
 
 
 def get_path_server_url(openapi_spec: OpenAPI, path: str) -> str:

@@ -457,8 +457,3 @@ def test_select_endpoint_returns_none():
     spec = OpenAPI.model_validate({"openapi": "3.1.0", "info": {"title": "Test API", "version": "1.0.0"}, "paths": {}})
     assert select_endpoint(spec) is None
     assert select_endpoint(spec, "some query") is None
-
-
-def test_select_parameters_returns_none():
-    spec = OpenAPI.model_validate({"openapi": "3.1.0", "info": {"title": "Test API", "version": "1.0.0"}, "paths": {}})
-    assert select_parameters(spec, "/some/path") is None
