@@ -366,17 +366,17 @@ def test_generate_endpoint_descriptions_with_parameters():
     assert len(params) == 2
 
     # Check path parameter
-    path_param = next(p for p in params if p["param_in"] == "path")
+    path_param = next(p for p in params if p["in"] == "path")
     assert path_param["name"] == "user_id"
     assert path_param["required"] is True
-    assert path_param["param_schema"]["type"] == "string"
+    assert path_param["schema"]["type"] == "string"
 
     # Check query parameter
-    query_param = next(p for p in params if p["param_in"] == "query")
+    query_param = next(p for p in params if p["in"] == "query")
     assert query_param["name"] == "limit"
     assert query_param["required"] is False
-    assert query_param["param_schema"]["type"] == "integer"
-    assert query_param["param_schema"]["default"] == 10
+    assert query_param["schema"]["type"] == "integer"
+    assert query_param["schema"]["default"] == 10
 
 
 def test_generate_endpoint_descriptions_with_no_get_endpoints():
