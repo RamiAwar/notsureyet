@@ -1,4 +1,5 @@
 import json
+from unittest.mock import MagicMock
 
 import pytest
 import requests
@@ -457,3 +458,42 @@ def test_select_endpoint_returns_none():
     spec = OpenAPI.model_validate({"openapi": "3.1.0", "info": {"title": "Test API", "version": "1.0.0"}, "paths": {}})
     assert select_endpoint(spec) is None
     assert select_endpoint(spec, "some query") is None
+
+
+def test_resolve_parameter_reference():
+    """Test the resolve_parameter_reference function."""
+    from hello import resolve_parameter_reference
+    from openapi_pydantic.v3.v3_0 import Parameter as ParameterV30
+
+    # Mock OpenAPI spec with components
+    mock_openapi_spec = MagicMock()
+    mock_openapi_spec.components = MagicMock()
+    mock_openapi_spec.components.parameters = {
+        "user_id": ParameterV30(
+            name="user_id",
+            param_in="path",
+            required=True,
+            schema={"type": "string"}
+        )
+    }
+
+    # Test case 1: Valid reference
+    parameter_ref = {"$ref": "#/components/parameters/user_id"}
+    resolved_param = resolve_parameter_reference(parameter_ref, mock_openapi_spec)
+    assert resolved_param.name == "user_id"
+    assert resolved_param.param_in == "path"
+
+    # Test case 2: Non-reference parameter
+    non_ref_param = ParameterV30(
+        name="limit",
+        param_in="query",
+        required=False,
+        schema={"type": "integer"}
+    )
+    resolved_param = resolve_parameter_reference(non_ref_param, mock_openapi_spec)
+    assert resolved_param == non_ref_param
+
+    # Test case 3: Invalid reference
+    invalid_ref = {"$ref": "#/components/parameters/unknown"}
+    resolved_param = resolve_parameter_reference(invalid_ref, mock_openapi_spec)
+    assert resolved_param is None

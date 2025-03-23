@@ -137,22 +137,29 @@ def select_endpoint(openapi_spec: OpenAPI, user_query: str = ""):
     return result.data
 
 
+def resolve_parameter_reference(parameter: dict, openapi_spec: OpenAPI) -> ParameterV30 | ParameterV31 | None:
+    """Resolve a parameter reference in the OpenAPI spec."""
+    if isinstance(parameter, dict) and "$ref" in parameter:
+        ref_name = parameter["$ref"].split("/")[-1]
+        return openapi_spec.components.parameters.get(ref_name)
+    return parameter
+
+
 def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> list[ParameterIn]:
     """Given an endpoint, select the parameters to build the API call.
     This includes query and path parameters. Validation should be based on
     the endpoint's openapi spec.
     """
-
     # Extract endpoint parameters description
     if openapi_spec.paths and endpoint in openapi_spec.paths:
         endpoint_spec = openapi_spec.paths[endpoint]
-
         if endpoint_spec.get and endpoint_spec.get.parameters:
             parameter_descriptions = {}
             for parameter in endpoint_spec.get.parameters:
-                # TODO: Handle references, not only resolved parameters
-                if isinstance(parameter, ParameterV30 | ParameterV31):
-                    parameter_descriptions[parameter.name] = parameter.model_dump(
+                # Use the new function to resolve references
+                resolved_parameter = resolve_parameter_reference(parameter, openapi_spec)
+                if isinstance(resolved_parameter, ParameterV30 | ParameterV31):
+                    parameter_descriptions[resolved_parameter.name] = resolved_parameter.model_dump(
                         mode="json", by_alias=True, exclude_none=True
                     )
         else:
@@ -167,12 +174,9 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
     def system_prompt(parameter_descriptions: dict[str, Any]) -> str:
         return f"""\
     You are a smart API engineer that can help pick the query and path parameter values to use to answer a user's query.
-
     We've got a list of parameters and their openapi spec, you should look at them and decide what values to use for the parameters.
-
     Return a dictionary of a single key "parameters" that has a list of key value pairs with the parameter name as the key and the parameter value as the value.
     Return nothing else.
-
     Example:
     User query: "What's the weather in Berlin?"
     Endpoint: "/weather"
@@ -181,7 +185,6 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
         "location": "str",
         "timezone": "str",
     }}
-
     Response:
     {{
         "parameters": [
@@ -197,10 +200,8 @@ def select_parameters(openapi_spec: OpenAPI, endpoint: str, user_query: str) -> 
             }}
         ]
     }}
-
     Available parameters:
     {format_as_xml(parameter_descriptions)}
-
     User query:
     {user_query}
     """
